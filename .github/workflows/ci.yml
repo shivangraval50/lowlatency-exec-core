@@ -1,0 +1,12 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build + run smoke test
+        run: g++ -std=c++20 -O2 tests/test_smoke.cpp -o smoke && ./smoke
+      # TODO: add sanitizer jobs once real code lands, e.g.
+      #   g++ -std=c++20 -fsanitize=address,undefined tests/*.cpp ...
+      #   g++ -std=c++20 -fsanitize=thread           tests/*.cpp ...

@@ -1,0 +1,10 @@
+build/
+cmake-build-*/
+*.o
+*.obj
+*.a
+*.out
+CMakeCache.txt
+CMakeFiles/
+.env
+.DS_Store
