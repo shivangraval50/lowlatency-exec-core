@@ -60,3 +60,24 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_ring_buffer.cpp)
   target_compile_options(ring_buffer_tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
   add_test(NAME ring_buffer_tests COMMAND ring_buffer_tests)
 endif()
+
+# Phase 3's slab_allocator.hpp is header-only, same as ring_buffer.hpp above
+# -- just wire in the test executable once the tester phase adds it.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_slab_allocator.cpp)
+  add_executable(slab_allocator_tests tests/test_slab_allocator.cpp)
+  target_link_libraries(slab_allocator_tests PRIVATE exec_core)
+  target_compile_options(slab_allocator_tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME slab_allocator_tests COMMAND slab_allocator_tests)
+endif()
+
+# Phase 3 order-book/slab integration stress tests (large resting-order
+# counts, interleaved add/cancel/fill, full-book teardown) -- see
+# tests/test_order_book_slab_stress.cpp. Meant to be run under
+# ASan/UBSan too; this target itself just builds a plain instrumented-or-not
+# binary depending on whatever CMAKE_CXX_FLAGS the invoking configure passed.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_order_book_slab_stress.cpp)
+  add_executable(order_book_slab_stress_tests tests/test_order_book_slab_stress.cpp)
+  target_link_libraries(order_book_slab_stress_tests PRIVATE exec_core)
+  target_compile_options(order_book_slab_stress_tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME order_book_slab_stress_tests COMMAND order_book_slab_stress_tests)
+endif()

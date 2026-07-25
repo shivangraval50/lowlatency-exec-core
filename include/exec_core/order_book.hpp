@@ -2,13 +2,13 @@
 
 #include <cstddef>
 #include <functional>
-#include <list>
 #include <map>
 #include <optional>
 #include <unordered_map>
 #include <vector>
 
 #include "exec_core/order.hpp"
+#include "exec_core/slab_allocator.hpp"
 #include "exec_core/trade.hpp"
 #include "exec_core/types.hpp"
 
@@ -16,17 +16,32 @@ namespace exec_core {
 
 // Single-threaded limit order book with price-time priority matching.
 //
-// Design (phase 1: correctness first -- no lock-free tricks, no custom
-// allocators, no SIMD; those are later phases in PLAN.md):
+// Design (phase 1: correctness first; phase 3 replaces the node allocation
+// strategy described below -- no lock-free tricks, no SIMD yet; those are
+// later phases in PLAN.md):
 //
-//  - Each side of the book is a std::map<Price, std::list<RestingOrder>>,
-//    keyed so that map::begin() is always the best price: bids_ compares
-//    with std::greater (highest price first), asks_ with std::less (lowest
-//    price first). A std::list per price level gives O(1) push-to-back on
-//    arrival and O(1) erase-by-iterator on cancel/fill, while preserving
-//    FIFO (time priority) order via list iteration order.
+//  - Each side of the book is a std::map<Price, PriceLevel>, keyed so that
+//    map::begin() is always the best price: bids_ compares with
+//    std::greater (highest price first), asks_ with std::less (lowest
+//    price first). `PriceLevel` is a minimal intrusive doubly-linked list
+//    (just head/tail raw pointers over `OrderNode`s) giving O(1)
+//    push-to-back on arrival and O(1) erase-by-pointer on cancel/fill,
+//    while preserving FIFO (time priority) order via list traversal order
+//    -- the same complexity `std::list<RestingOrder>` gave in phase 1.
+//  - Phase 3 change: `OrderNode`s are no longer individually `new`/`delete`d
+//    (that was phase 1's `std::list<RestingOrder>`'s default per-node heap
+//    traffic). Instead every `OrderNode`, on either side of the book, at
+//    any price level, is carved out of ONE shared `SlabAllocator<OrderNode>`
+//    pre-reserved arena (`node_pool_` below) via O(1) free-list pop/push --
+//    see slab_allocator.hpp for the allocator itself and its exhaustion
+//    policy. One shared pool (not one pool per price level) is deliberate:
+//    total resting-order count is bounded by book depth, not by how many
+//    distinct price levels happen to be occupied, so a single arena sized
+//    to expected book depth is the realistic design (a pool per price
+//    level would either over-reserve per level or defeat the point of
+//    pre-reservation).
 //  - An unordered_map<OrderId, location> gives O(1) average lookup from an
-//    order id to its (side, price, list-iterator) so cancel doesn't need to
+//    order id to its (side, price, node pointer) so cancel doesn't need to
 //    scan the book.
 //  - A monotonic sequence counter timestamps orders (for tie-breaking / test
 //    visibility) and trades (for a stable global trade ordering).
@@ -36,19 +51,42 @@ namespace exec_core {
 //    plus O(k) where k is the number of resting orders it fully consumes
 //    while matching (each such order is O(1) to remove). Never touches
 //    price levels it doesn't cross.
-//  - cancel_order: O(1) average (hash lookup + list::erase by iterator),
-//    plus O(log P) if removing the order empties its price level and that
-//    level must be erased from the map.
+//  - cancel_order: O(1) average (hash lookup + intrusive-list erase by
+//    pointer), plus O(log P) if removing the order empties its price level
+//    and that level must be erased from the map.
 //  - best_bid/best_ask: O(1) (map::begin already the extreme element).
 //
 // P = number of distinct price levels currently resting on that side.
 //
 // Not covered by this phase (later phases / explicitly out of scope here):
-// lock-free/concurrent access, custom allocators, SIMD price scans, market
-// orders / stop orders / iceberg orders, order modification (cancel+replace
-// is done by the caller as cancel() + add_limit_order()).
+// lock-free/concurrent access, SIMD price scans, market orders / stop
+// orders / iceberg orders, order modification (cancel+replace is done by
+// the caller as cancel() + add_limit_order()).
 class OrderBook {
 public:
+    OrderBook() = default;
+
+    // Owns a pool of raw memory (node_pool_) and pointer-linked intrusive
+    // lists into it -- copying would require deep-copying every node and
+    // relinking every list, which nothing in this codebase needs; deleting
+    // it is honest rather than leaving a silently-wrong-by-default copy
+    // that shares the wrong pool. Not moved either, for the same reason
+    // SlabAllocator itself isn't (see slab_allocator.hpp): this owns raw
+    // memory and is meant to be held by reference/pointer, not passed by
+    // value. (Phase 1/2 code never copied or moved an OrderBook, so this
+    // is not a behavior change for any existing caller/test.)
+    OrderBook(const OrderBook&) = delete;
+    OrderBook& operator=(const OrderBook&) = delete;
+    OrderBook(OrderBook&&) = delete;
+    OrderBook& operator=(OrderBook&&) = delete;
+
+    // Destroys any still-resting orders' nodes and returns their storage to
+    // node_pool_ before the pool itself is torn down (mirrors how e.g.
+    // std::vector's destructor destroys its elements before freeing their
+    // storage -- SlabAllocator, like std::allocator, only owns raw memory,
+    // not object lifetime).
+    ~OrderBook();
+
     // Submits a new limit order. It first matches against resting orders on
     // the opposite side while prices cross (price-time priority: best price
     // first, then oldest order at that price first). Any unfilled remainder
@@ -86,17 +124,52 @@ public:
     std::vector<OrderId> orders_at(Side side, Price price) const;
 
 private:
-    using LevelOrders = std::list<RestingOrder>;
+    // Intrusive doubly-linked-list node for one resting order. Allocated
+    // from / freed back to node_pool_ (never via bare new/delete) -- see
+    // push_back()/pop_front()/erase() in order_book.cpp.
+    struct OrderNode {
+        RestingOrder order;
+        OrderNode* prev = nullptr;
+        OrderNode* next = nullptr;
+    };
+
+    // One FIFO (time-priority) queue of resting orders at a single price.
+    // Deliberately just two raw pointers: PriceLevel itself owns no
+    // memory (node_pool_ does), so it stays cheap to default-construct,
+    // which matters because std::map<Price, PriceLevel>::operator[]
+    // default-constructs a new one every time a fresh price level appears.
+    struct PriceLevel {
+        OrderNode* head = nullptr; // next to match (oldest / time priority)
+        OrderNode* tail = nullptr; // most recently arrived
+    };
 
     struct OrderLocation {
         Side side;
         Price price;
-        LevelOrders::iterator it;
+        OrderNode* node;
     };
 
-    std::map<Price, LevelOrders, std::greater<Price>> bids_; // best (highest) price first
-    std::map<Price, LevelOrders, std::less<Price>> asks_;    // best (lowest) price first
+    // Intrusive-list helpers. These are OrderBook member functions (not
+    // free functions on PriceLevel) because they need node_pool_ to
+    // allocate/deallocate OrderNodes; see order_book.cpp.
+    OrderNode* push_back(PriceLevel& level, const RestingOrder& order);
+    void pop_front(PriceLevel& level);
+    void erase(PriceLevel& level, OrderNode* node);
+    static Quantity sum_quantity(const PriceLevel& level);
+    static std::vector<OrderId> collect_ids(const PriceLevel& level);
+
+    std::map<Price, PriceLevel, std::greater<Price>> bids_; // best (highest) price first
+    std::map<Price, PriceLevel, std::less<Price>> asks_;    // best (lowest) price first
     std::unordered_map<OrderId, OrderLocation> locations_;
+
+    // Phase 3: shared arena for OrderNodes across both sides of the book
+    // and every price level (see class-level comment above for why one
+    // shared pool, not one per level). See slab_allocator.hpp for the
+    // allocation/exhaustion policy -- in short: O(1) alloc/free once
+    // warmed up, and if resting-order count ever exceeds the initial
+    // reservation the pool grows by one more chunk rather than failing an
+    // order or corrupting memory.
+    SlabAllocator<OrderNode> node_pool_;
 
     Sequence next_sequence_ = 0;
 };

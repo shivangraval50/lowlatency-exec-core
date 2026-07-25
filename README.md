@@ -27,8 +27,12 @@ PLAN.md):
    algorithm). Power-of-2 capacity, acquire/release atomics (not seq_cst) with the
    producer/consumer counters each cache-line-padded to avoid false sharing. Verified
    under ThreadSanitizer with a real 2-thread producer/consumer stress test.
-3. Custom slab allocator (planned) -- replace general-purpose `new`/`std::list` node
-   allocation for resting orders.
+3. **Custom slab allocator** (done) -- `SlabAllocator<T>`, a fixed-block pool with an
+   intrusive free list, pre-reserves blocks up front so `OrderBook`'s resting-order nodes
+   (now an intrusive list, not `std::list`) are carved out of one arena instead of calling
+   `new`/`delete` per order. Grows by one more chunk (logged via `growth_events()`) if the
+   initial capacity guess is exceeded, rather than rejecting an order or corrupting memory.
+   Verified under ASan+UBSan, including a stress test forcing real pool growth.
 4. Cache-line alignment + core pinning (planned).
 5. SIMD price scans (planned) -- NEON locally, AVX2 on x86 CI.
 6. Latency-percentile harness (planned) -- p50/p99/p99.9/p99.99, re-measured after each
