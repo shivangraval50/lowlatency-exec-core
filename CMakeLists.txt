@@ -20,12 +20,28 @@ find_package(Threads REQUIRED)
 add_library(exec_core
   src/order_book.cpp
   src/core_affinity.cpp
+  src/price_scan.cpp
 )
 target_include_directories(exec_core PUBLIC include)
 target_compile_options(exec_core PRIVATE -Wall -Wextra -Wpedantic)
 # core_affinity.cpp's Linux path calls pthread_setaffinity_np(), so the
 # library itself needs to link pthread there (harmless/no-op on macOS).
 target_link_libraries(exec_core PUBLIC Threads::Threads)
+
+# Phase 5 (SIMD price scans, src/price_scan.cpp): the ARM NEON path there
+# compiles automatically on AArch64 (NEON is baseline on ARM64, no special
+# flag needed), but the AVX2 path needs an explicit -mavx2 -- AVX2 is NOT
+# implied merely by targeting x86_64. Apply that flag ONLY to this one
+# source file, and ONLY when actually building for an x86 target, so this
+# doesn't try (and fail) to pass an x86-only flag to arm64/AArch64 clang on
+# this project's local dev machine (M2). CI (.github/workflows/ci.yml) runs
+# on ubuntu-latest, which is real x86_64 hardware with AVX2 -- that's where
+# this flag actually matters and where the AVX2 path gets compiled and
+# tested. It has NOT been runtime-verified on this local (ARM) machine; see
+# price_scan.hpp's file header for the honest status of each path.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i.86)$")
+  set_source_files_properties(src/price_scan.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
+endif()
 
 # Manual sanity-check driver (not the authoritative test suite).
 add_executable(exec_core_demo src/main.cpp)
@@ -103,4 +119,17 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_core_affinity.cpp)
   target_link_libraries(core_affinity_tests PRIVATE exec_core Threads::Threads)
   target_compile_options(core_affinity_tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
   add_test(NAME core_affinity_tests COMMAND core_affinity_tests)
+endif()
+
+# Phase 5's price_scan.hpp/.cpp: scalar reference implementation always
+# compiles/runs; NEON path compiles+runs here (AArch64, this project's local
+# machine); AVX2 path only compiles (and only gets exercised) on an x86
+# target -- i.e. CI (ubuntu-latest), via the -mavx2 flag applied to
+# src/price_scan.cpp above. Wired in automatically once the tester phase
+# adds the test file, same pattern as every other phase above.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_price_scan.cpp)
+  add_executable(price_scan_tests tests/test_price_scan.cpp)
+  target_link_libraries(price_scan_tests PRIVATE exec_core)
+  target_compile_options(price_scan_tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME price_scan_tests COMMAND price_scan_tests)
 endif()

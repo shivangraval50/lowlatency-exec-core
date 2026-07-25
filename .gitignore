@@ -2,6 +2,10 @@ build/
 build-*/
 build_*/
 cmake-build-*/
+.gate_*/
+.tmp_*
+.tmp*/
+.build-log.txt
 *.o
 *.obj
 *.a

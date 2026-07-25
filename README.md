@@ -43,7 +43,16 @@ PLAN.md):
    calls `thread_policy_set(THREAD_AFFINITY_POLICY)` but maps its real return code to an
    honest `BestEffortHint`/`Unsupported` outcome rather than claiming true pinning --
    measured on this M2, it actually returns `KERN_NOT_SUPPORTED`, i.e. no pinning at all.
-5. SIMD price scans (planned) -- NEON locally, AVX2 on x86 CI.
+5. **SIMD price scans** (NEON done and verified locally; AVX2 TODO -- see below) --
+   `scan_quantity_at_or_better`, a standalone (not yet wired into `OrderBook`'s live
+   matching path) primitive answering "how much resting quantity is at-or-better than a
+   given limit price" over a flat price/quantity array, with scalar/NEON/AVX2
+   implementations and platform dispatch. NEON cross-checked against the scalar reference
+   with a 500-trial randomized property test plus fixed edge cases (empty, boundary ties,
+   vector-width/remainder sizes) -- all pass on this M2. AVX2 only compile-checked
+   (inspected generated assembly to confirm real `vpcmpgtq`/`vpaddq` etc. were emitted) --
+   this machine has no x86 hardware to actually run it on, so it is NOT claimed as verified;
+   PLAN.md leaves this phase unchecked pending a real run on x86 CI.
 6. Latency-percentile harness (planned) -- p50/p99/p99.9/p99.99, re-measured after each
    phase so every optimization's actual effect (or lack of one) is on the record.
 
@@ -57,6 +66,9 @@ PLAN.md):
 - Single-threaded, single-process, in-memory only -- no persistence, no networking, no
   multi-symbol routing. This is the matching-engine core, not an exchange.
 - No market/stop/iceberg order types yet; order modify is cancel + re-add, not in-place.
+- AVX2 SIMD price-scan path is compile-checked only, not runtime-verified -- no x86
+  hardware on this local machine. TODO: run on x86 CI (ubuntu-latest) before claiming it
+  works; PLAN.md leaves that phase unchecked until then.
 - Real CPU core pinning only happens on Linux. On this local machine (macOS/Apple Silicon
   M2) `thread_policy_set` returns `KERN_NOT_SUPPORTED` -- there is no working core-affinity
   mechanism to benchmark against locally; that part of the design is only actually verified
