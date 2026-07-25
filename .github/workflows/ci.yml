@@ -5,8 +5,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build + run smoke test
-        run: g++ -std=c++20 -O2 tests/test_smoke.cpp -o smoke && ./smoke
+      - name: Configure (CMake)
+        run: cmake -S . -B build
+      - name: Build
+        run: cmake --build build
+      - name: Run tests (ctest)
+        run: ctest --test-dir build --output-on-failure
+      # Phase 5 (SIMD price scans): the AVX2 half of src/price_scan.cpp was
+      # written by hand on an ARM (Apple Silicon) dev machine with no x86
+      # hardware to run it on -- see include/exec_core/price_scan.hpp's file
+      # header. This runner (ubuntu-latest) is real x86_64 hardware, so this
+      # is where that path actually gets compiled *and executed* for the
+      # first time. Two steps: first an honest check that this specific
+      # runner really has AVX2 (rather than assuming it), then an actual
+      # run comparing the AVX2 implementation's output against the scalar
+      # reference across several edge cases (see tools/avx2_smoke_check.cpp
+      # -- an interim author-written smoke check, not the authoritative
+      # suite; that's tests/test_price_scan.cpp / price_scan_tests above,
+      # which ctest already runs and which also exercises AVX2 on this
+      # runner once that file exists, since CMakeLists.txt applies -mavx2 to
+      # src/price_scan.cpp automatically on any x86_64 CMAKE_SYSTEM_PROCESSOR).
+      - name: Verify this runner actually has AVX2
+        run: |
+          if ! grep -q avx2 /proc/cpuinfo; then
+            echo "This ubuntu-latest runner does NOT report avx2 in /proc/cpuinfo -- failing loudly instead of silently skipping the AVX2 check." >&2
+            exit 1
+          fi
+          echo "avx2 flag confirmed present in /proc/cpuinfo on this runner."
+      - name: Build + run AVX2 price-scan smoke check (real x86_64 hardware)
+        run: |
+          g++ -std=c++20 -mavx2 -Wall -Wextra -Iinclude \
+            tools/avx2_smoke_check.cpp src/price_scan.cpp \
+            -o avx2_smoke_check
+          ./avx2_smoke_check
       # TODO: add sanitizer jobs once real code lands, e.g.
       #   g++ -std=c++20 -fsanitize=address,undefined tests/*.cpp ...
       #   g++ -std=c++20 -fsanitize=thread           tests/*.cpp ...
