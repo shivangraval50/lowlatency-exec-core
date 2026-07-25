@@ -100,18 +100,14 @@
 #include <optional>
 #include <type_traits>
 
+#include "exec_core/cache_line.hpp"
+
 namespace exec_core {
 
-#if defined(__cpp_lib_hardware_interference_size)
-inline constexpr std::size_t kCacheLineSize = std::hardware_destructive_interference_size;
-#else
-// libc++/libstdc++ on most of our target platforms (macOS/arm64, Linux/x86_64
-// CI) don't ship std::hardware_destructive_interference_size in a way we can
-// rely on portably yet; 64 bytes is the correct line size for both Apple
-// Silicon and current x86-64 server/desktop parts, so it's used as a plain
-// constant instead.
-inline constexpr std::size_t kCacheLineSize = 64;
-#endif
+// kCacheLineSize used to be defined locally here; phase 4 pulled it out into
+// cache_line.hpp as the one shared definition every hot-path header uses
+// (see that file for where the 64-byte fallback comes from). No behavior
+// change -- same value, same fallback logic, just a shared source of truth.
 
 // Fixed-capacity, single-producer/single-consumer lock-free ring buffer.
 // `T` is meant to hold a small POD-ish "inbound order command" (or any

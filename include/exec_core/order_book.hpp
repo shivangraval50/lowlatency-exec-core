@@ -124,6 +124,47 @@ public:
     std::vector<OrderId> orders_at(Side side, Price price) const;
 
 private:
+    // -----------------------------------------------------------------------
+    // Phase 4 alignment audit: OrderNode / PriceLevel / OrderLocation
+    // deliberately do NOT get `alignas(kCacheLineSize)`.
+    // -----------------------------------------------------------------------
+    // False sharing (two cores repeatedly bouncing ownership of the same
+    // cache line because they're writing *different* variables that happen
+    // to land on it) is strictly a multi-core, concurrent-access phenomenon.
+    // OrderBook is, by this project's explicit design (see the class-level
+    // comment above and README.md: "single-threaded matching engine"),
+    // touched by exactly one thread. Even in the intended future pipeline
+    // (ring_buffer.hpp's inbound-command queue feeding a matching-engine
+    // thread), the producer thread that decodes commands never reaches into
+    // OrderBook's internals itself -- it only pushes into the ring buffer;
+    // the single consumer thread is the only thing that ever calls
+    // add_limit_order()/cancel_order()/etc. and therefore the only thing
+    // that ever touches an OrderNode, PriceLevel, or OrderLocation. There is
+    // no second thread to false-share *with*.
+    //
+    // Given that, `alignas(kCacheLineSize)` here would be pure cost with no
+    // matching benefit:
+    //   - OrderNode is ~48 bytes (RestingOrder: 4 x int64/uint64, plus two
+    //     8-byte pointers); padding it to 64 bytes wouldn't just waste
+    //     memory per node, it would actively hurt performance, since the
+    //     hot loop that matches orders at a price level (see
+    //     add_limit_order() in order_book.cpp) walks OrderNode::next
+    //     pointer-chasing through however many resting orders are at the
+    //     best price -- fewer nodes per cache line means *more* cache
+    //     misses during that walk, the opposite of what alignment is meant
+    //     to buy you here.
+    //   - PriceLevel is 16 bytes (two pointers) and is default-constructed
+    //     on every new price level via std::map::operator[] (see the
+    //     existing comment on PriceLevel below) -- padding it out would
+    //     bloat every std::map<Price, PriceLevel> node for no reason.
+    //   - OrderLocation is small and only ever read/written by the single
+    //     matching-engine thread via locations_ (also single-threaded).
+    //
+    // If a later, materially different design ever ran multiple matching
+    // threads over sharded/partitioned order books (out of scope today --
+    // see README.md's "Limitations" section), *that* would be the point to
+    // revisit this, not before.
+
     // Intrusive doubly-linked-list node for one resting order. Allocated
     // from / freed back to node_pool_ (never via bare new/delete) -- see
     // push_back()/pop_front()/erase() in order_book.cpp.
@@ -132,6 +173,15 @@ private:
         OrderNode* prev = nullptr;
         OrderNode* next = nullptr;
     };
+    // Regression guard for the "no alignas(kCacheLineSize)" audit above: if
+    // that alignas were ever accidentally added back (or added to a member
+    // type), OrderNode's alignment would jump to kCacheLineSize (64); a
+    // plain struct of int64/pointer members has alignof <= alignof(void*)
+    // (8 on every platform this project targets), so this static_assert
+    // fails immediately rather than silently bloating every node.
+    static_assert(alignof(OrderNode) <= alignof(void*),
+                  "OrderNode's alignment exceeds a plain pointer's -- see the "
+                  "phase-4 alignment audit comment above before adding alignas here.");
 
     // One FIFO (time-priority) queue of resting orders at a single price.
     // Deliberately just two raw pointers: PriceLevel itself owns no
@@ -142,6 +192,9 @@ private:
         OrderNode* head = nullptr; // next to match (oldest / time priority)
         OrderNode* tail = nullptr; // most recently arrived
     };
+    static_assert(alignof(PriceLevel) <= alignof(void*),
+                  "PriceLevel's alignment exceeds a plain pointer's -- see the "
+                  "phase-4 alignment audit comment above before adding alignas here.");
 
     struct OrderLocation {
         Side side;

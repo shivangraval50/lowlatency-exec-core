@@ -33,7 +33,16 @@ PLAN.md):
    `new`/`delete` per order. Grows by one more chunk (logged via `growth_events()`) if the
    initial capacity guess is exceeded, rather than rejecting an order or corrupting memory.
    Verified under ASan+UBSan, including a stress test forcing real pool growth.
-4. Cache-line alignment + core pinning (planned).
+4. **Cache-line alignment + core pinning** (done) -- audited `OrderBook`/`SlabAllocator`
+   hot-path structs and deliberately did NOT cache-line-align them: they're only ever
+   touched by the single matching-engine thread, so there's no false sharing to prevent,
+   and padding would only bloat memory/cache footprint (`static_assert`s guard against this
+   regressing later). The ring buffer's existing phase-2 padding is unchanged, now sourced
+   from a shared `cache_line.hpp`. Core pinning is honestly platform-split: Linux uses real
+   `pthread_setaffinity_np` (kernel-enforced, verified via `sched_getcpu()` on CI); macOS
+   calls `thread_policy_set(THREAD_AFFINITY_POLICY)` but maps its real return code to an
+   honest `BestEffortHint`/`Unsupported` outcome rather than claiming true pinning --
+   measured on this M2, it actually returns `KERN_NOT_SUPPORTED`, i.e. no pinning at all.
 5. SIMD price scans (planned) -- NEON locally, AVX2 on x86 CI.
 6. Latency-percentile harness (planned) -- p50/p99/p99.9/p99.99, re-measured after each
    phase so every optimization's actual effect (or lack of one) is on the record.
@@ -48,6 +57,10 @@ PLAN.md):
 - Single-threaded, single-process, in-memory only -- no persistence, no networking, no
   multi-symbol routing. This is the matching-engine core, not an exchange.
 - No market/stop/iceberg order types yet; order modify is cancel + re-add, not in-place.
+- Real CPU core pinning only happens on Linux. On this local machine (macOS/Apple Silicon
+  M2) `thread_policy_set` returns `KERN_NOT_SUPPORTED` -- there is no working core-affinity
+  mechanism to benchmark against locally; that part of the design is only actually verified
+  on CI (`ubuntu-latest`).
 - This machine's Xcode Command Line Tools has a broken/incomplete libc++ header install
   (missing `<vector>`, `<map>`, etc.). Local builds work around it by pointing at the
   full macOS SDK's own libc++ headers; this workaround is local-machine-only and is not

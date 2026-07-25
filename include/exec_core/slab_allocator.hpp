@@ -72,6 +72,23 @@
 // honest single-threaded framing.
 //
 // ---------------------------------------------------------------------------
+// Phase 4 alignment audit: no `alignas(kCacheLineSize)` added here either
+// ---------------------------------------------------------------------------
+// Same reasoning as order_book.hpp's OrderNode/PriceLevel/OrderLocation
+// audit: false sharing requires two threads actively contending for the
+// same cache line, and this allocator's free_list_ pointer, chunk_size_,
+// total_capacity_, in_use_, growth_events_ counters, and chunks_ vector are
+// (per the paragraph above) only ever touched by whichever single thread
+// owns this SlabAllocator instance. Aligning any of that bookkeeping would
+// only inflate the object and, for FreeNode specifically, work directly
+// against the point of this allocator: FreeNode is deliberately as small as
+// `T` needs it to be (see kBlockSize below) so that blocks pack tightly and
+// a chunk allocated for, say, 4096 OrderNodes actually fits in the memory
+// footprint that implies -- padding every block out to a cache line would
+// multiply the arena's memory/cache footprint for a benefit (avoiding
+// false sharing) that doesn't exist in a single-threaded allocator.
+//
+// ---------------------------------------------------------------------------
 // Sanitizer coverage caveat
 // ---------------------------------------------------------------------------
 // AddressSanitizer's redzones are placed around each `::operator new` chunk,
@@ -177,6 +194,15 @@ class SlabAllocator {
     struct FreeNode {
         FreeNode* next;
     };
+    // Regression guard for the "no alignas(kCacheLineSize)" audit above: a
+    // bare single-pointer struct has alignof <= alignof(void*); if a future
+    // edit ever padded FreeNode out to a cache line (directly or by way of
+    // some added member), this fails at compile time for every T this
+    // allocator is instantiated with, instead of silently multiplying the
+    // arena's memory/cache footprint.
+    static_assert(alignof(FreeNode) <= alignof(void*),
+                  "FreeNode's alignment exceeds a plain pointer's -- see the "
+                  "phase-4 alignment audit comment above before adding alignas here.");
 
     static constexpr std::size_t kRawBlockSize = sizeof(T) > sizeof(FreeNode) ? sizeof(T) : sizeof(FreeNode);
     static constexpr std::size_t kBlockAlign = alignof(T) > alignof(FreeNode) ? alignof(T) : alignof(FreeNode);
