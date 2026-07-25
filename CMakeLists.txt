@@ -17,10 +17,18 @@ find_package(Threads REQUIRED)
 # sched_setaffinity; macOS: best-effort thread_policy_set) behind
 # __linux__/__APPLE__, so it's a regular translation unit here, not
 # header-only like ring_buffer.hpp/slab_allocator.hpp (which are templates).
+# latency_harness.cpp (phase 6) holds the non-template pieces of
+# latency_harness.hpp (percentile computation, pretty-printing) -- same
+# split as core_affinity.hpp/.cpp: the templated measure_latency_ns() stays
+# header-only (it must, since Fn is a caller-supplied type), but
+# compute_latency_stats()/print_latency_row() are ordinary functions and so
+# get a real translation unit like the rest of this project's non-template
+# code.
 add_library(exec_core
   src/order_book.cpp
   src/core_affinity.cpp
   src/price_scan.cpp
+  src/latency_harness.cpp
 )
 target_include_directories(exec_core PUBLIC include)
 target_compile_options(exec_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -46,6 +54,15 @@ endif()
 # Manual sanity-check driver (not the authoritative test suite).
 add_executable(exec_core_demo src/main.cpp)
 target_link_libraries(exec_core_demo PRIVATE exec_core)
+
+# Phase 6 latency-percentile benchmark driver (src/bench_main.cpp). Links
+# against the SAME exec_core library as everything else (Release by default,
+# per CMAKE_BUILD_TYPE above) -- this is a real runnable program, not a
+# results file; see that file's header for how to read/not over-trust its
+# output, and README.md's Results section for the actual reviewed numbers.
+add_executable(exec_core_bench src/bench_main.cpp)
+target_link_libraries(exec_core_bench PRIVATE exec_core)
+target_compile_options(exec_core_bench PRIVATE -Wall -Wextra -Wpedantic)
 
 enable_testing()
 
@@ -132,4 +149,18 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_price_scan.cpp)
   target_link_libraries(price_scan_tests PRIVATE exec_core)
   target_compile_options(price_scan_tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
   add_test(NAME price_scan_tests COMMAND price_scan_tests)
+endif()
+
+# Phase 6's latency_harness.hpp/.cpp: percentile-computation correctness
+# (nearest_rank_percentile/compute_latency_stats, against hand-computable
+# synthetic distributions) plus structural invariants on measure_latency_ns
+# itself. Uses fork()/exec()/waitpid() (POSIX) for one self-check (confirm
+# assert() is genuinely live in this exact binary) and std::this_thread::
+# sleep_for for another (confirm warmup iterations are excluded) -- links
+# Threads::Threads for the latter, same as ring_buffer_tests above.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_latency_harness.cpp)
+  add_executable(latency_harness_tests tests/test_latency_harness.cpp)
+  target_link_libraries(latency_harness_tests PRIVATE exec_core Threads::Threads)
+  target_compile_options(latency_harness_tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME latency_harness_tests COMMAND latency_harness_tests)
 endif()

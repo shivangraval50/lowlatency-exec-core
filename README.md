@@ -53,8 +53,27 @@ PLAN.md):
    (inspected generated assembly to confirm real `vpcmpgtq`/`vpaddq` etc. were emitted) --
    this machine has no x86 hardware to actually run it on, so it is NOT claimed as verified;
    PLAN.md leaves this phase unchecked pending a real run on x86 CI.
-6. Latency-percentile harness (planned) -- p50/p99/p99.9/p99.99, re-measured after each
-   phase so every optimization's actual effect (or lack of one) is on the record.
+6. **Latency-percentile harness** (done) -- `measure_latency_ns` runs a caller-supplied
+   workload for a warmup period (untimed, discarded) then a measured period, recording each
+   iteration's `steady_clock` duration into a buffer allocated once up front (no in-loop
+   allocation, so the measurement loop doesn't inject its own outliers); `compute_latency_stats`
+   reduces the samples to min/p50/p90/p99/p99.9/p99.99/max/mean via the nearest-rank method.
+   `src/bench_main.cpp` wires this up against real phase 1-5 code (`OrderBook::add_limit_order`
+   resting and crossing, `OrderBook::cancel_order`, `SpscRingBuffer` push+pop, `scan_quantity_at_or_better`
+   at two depths) and prints an honest results table -- see that file's header for exactly what
+   each workload does and doesn't measure. While building this, the tester's synthetic-distribution
+   tests caught a real bug: `nearest_rank_percentile` computed the rank via `double` arithmetic
+   (`ceil((p/100.0) * N)`), which silently returned an off-by-one rank whenever the mathematically
+   exact result was itself an integer (e.g. p99.9 at any N that's an exact multiple of 1000 --
+   this includes `bench_main.cpp`'s own `kMeasuredIters=50000`), because literals like `99.9`
+   aren't exactly representable in binary floating point. Fixed by switching the whole
+   computation to exact integer arithmetic (round the percentage to hundredths-of-a-percent via
+   `std::llround`, then ceiling-divide as an integer, widened to `unsigned __int128` to rule out
+   overflow) -- verified against a hand-computed exact-integer oracle in `tests/test_latency_harness.cpp`.
+   Running `exec_core_bench` once on this laptop is a sanity check that the harness works
+   end-to-end against real code, NOT the authoritative benchmark run this README's Results table
+   should be filled in from -- see bench_main.cpp's file header for why (single-machine noise, no
+   real core pinning on this M2, sample counts too small for genuine p99.99 resolution).
 
 ## Results
 | Metric | Value |
@@ -77,4 +96,9 @@ PLAN.md):
   (missing `<vector>`, `<map>`, etc.). Local builds work around it by pointing at the
   full macOS SDK's own libc++ headers; this workaround is local-machine-only and is not
   baked into `CMakeLists.txt` or CI (CI builds cleanly on `ubuntu-latest`).
+- The latency-percentile harness (`exec_core_bench`) has only been run as a local sanity check
+  on this one laptop, a handful of times, not as a controlled benchmark (no isolated/dedicated
+  machine, no repeated-runs-with-statistics methodology, no verification of `steady_clock`'s own
+  call overhead). The Results table below stays "TODO" until a real, reviewed benchmark run
+  happens -- a single noisy laptop run is not that.
 - <!-- TODO: fill in as the build progresses. -->
