@@ -9,6 +9,9 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Needed by anything using std::thread (phase 2's SPSC ring buffer test will).
+find_package(Threads REQUIRED)
+
 # Core matching-engine library (phase 1: single-threaded, correctness first).
 add_library(exec_core
   src/order_book.cpp
@@ -44,4 +47,16 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_order_book.cpp)
   target_link_libraries(order_book_tests PRIVATE exec_core)
   target_compile_options(order_book_tests PRIVATE -Wall -Wextra -UNDEBUG)
   add_test(NAME order_book_tests COMMAND order_book_tests)
+endif()
+
+# Phase 2's ring_buffer.hpp is header-only (include/ is already a public
+# include dir of exec_core above), so no new library target is needed -- just
+# wire in the test executable once the tester phase adds it. Links against
+# Threads::Threads because a real test needs actual concurrent
+# producer/consumer std::thread's, not just single-threaded API checks.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_ring_buffer.cpp)
+  add_executable(ring_buffer_tests tests/test_ring_buffer.cpp)
+  target_link_libraries(ring_buffer_tests PRIVATE exec_core Threads::Threads)
+  target_compile_options(ring_buffer_tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME ring_buffer_tests COMMAND ring_buffer_tests)
 endif()

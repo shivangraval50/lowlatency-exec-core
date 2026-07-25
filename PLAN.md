@@ -3,7 +3,7 @@
 Each phase is independently verifiable. Check off as completed.
 
 - [x] Single-threaded matching engine (correctness first)
-- [ ] Lock-free ring buffer
+- [x] Lock-free ring buffer
 - [ ] Custom slab allocator
 - [ ] Cache-line alignment + core pinning
 - [ ] SIMD price scans

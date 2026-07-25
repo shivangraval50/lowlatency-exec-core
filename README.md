@@ -22,7 +22,11 @@ PLAN.md):
    list preserves FIFO time priority per level and gives O(1) erase-by-iterator); an
    `unordered_map<OrderId, ...>` gives O(1)-average cancel lookup. Plain STL containers,
    no lock-free tricks or custom allocation yet -- correctness first.
-2. Lock-free ring buffer (planned) -- for inbound order ingestion.
+2. **Lock-free ring buffer** (done) -- `SpscRingBuffer<T, Capacity>`, single-producer/
+   single-consumer only (explicitly, not MPMC -- a correct MPMC needs a different
+   algorithm). Power-of-2 capacity, acquire/release atomics (not seq_cst) with the
+   producer/consumer counters each cache-line-padded to avoid false sharing. Verified
+   under ThreadSanitizer with a real 2-thread producer/consumer stress test.
 3. Custom slab allocator (planned) -- replace general-purpose `new`/`std::list` node
    allocation for resting orders.
 4. Cache-line alignment + core pinning (planned).
